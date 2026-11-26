@@ -38,26 +38,33 @@ func (a *Archive) Restore(ctx context.Context, id string, in RestoreInput) (Rest
 	if a.src.FS.Capabilities().ReadOnly || (!in.KeepCopy && a.dst.FS.Capabilities().ReadOnly) {
 		return none, fmt.Errorf("archive: restore needs a writable drive and target: %w", odraz.ErrPermission)
 	}
-	rec, err := a.load(ctx, id)
+	rec, unlock, err := a.lockItem(ctx, id)
 	if err != nil {
 		return none, err
 	}
+	defer unlock()
 	progress := func(s Stage, done, total int64) {
 		if in.Progress != nil {
 			in.Progress(s, done, total)
 		}
 	}
-	dest, there, err := a.destination(ctx, rec)
+	dest, found, err := a.destination(ctx, rec)
 	if err != nil {
 		return none, err
 	}
-	if !there {
+	if found == nil {
 		if err := a.bringBack(ctx, rec, dest, progress); err != nil {
 			return none, err
 		}
 	}
 	if !in.KeepCopy {
 		progress(Removing, 0, 0)
+		// Last look: the copy goes only while the restored file is there, and a
+		// file that was found in place is still the one that was read.
+		now, err := a.src.FS.Stat(ctx, dest)
+		if err != nil || now.IsDir || now.Size != rec.Size || (found != nil && !unchanged(*found, now)) {
+			return none, fmt.Errorf("%w: %s changed before its copy could be removed: %w", ErrNotVerified, dest, errors.Join(err, ErrSourceChanged))
+		}
 		if err := a.purgeCopy(ctx, rec); err != nil {
 			return none, fmt.Errorf("archive: %s is restored, but its copy could not be removed: %w", dest, err)
 		}
@@ -68,9 +75,10 @@ func (a *Archive) Restore(ctx context.Context, id string, in RestoreInput) (Rest
 	return RestoreResult{Path: dest, CopyKept: in.KeepCopy}, nil
 }
 
-// destination picks the path to restore to. there is true if the file is
-// already at that path with the right content, as after an interrupted restore.
-func (a *Archive) destination(ctx context.Context, rec Record) (p string, there bool, err error) {
+// destination picks the path to restore to. found is set if the file is already
+// at that path with the right content, as after an interrupted restore: it is the
+// file as it was read.
+func (a *Archive) destination(ctx context.Context, rec Record) (p string, found *files.Entry, err error) {
 	dir, name := path.Split(rec.OriginalPath)
 	ext := path.Ext(name)
 	if ext == name { // ".profile" has no extension
@@ -89,21 +97,21 @@ func (a *Archive) destination(ctx context.Context, rec Record) (p string, there 
 		st, err := a.src.FS.Stat(ctx, p)
 		switch {
 		case errors.Is(err, odraz.ErrNotFound):
-			return p, false, nil
+			return p, nil, nil
 		case err != nil:
-			return "", false, err
+			return "", nil, err
 		case st.IsDir || st.Size != rec.Size:
 			continue
 		}
 		sum, _, err := hashFile(ctx, a.src.FS, p, nil)
 		if err != nil {
-			return "", false, fmt.Errorf("%w: %s: %w", ErrNotVerified, p, err)
+			return "", nil, fmt.Errorf("%w: %s: %w", ErrNotVerified, p, err)
 		}
 		if sum == rec.SHA256 {
-			return p, true, nil
+			return p, &st, nil
 		}
 	}
-	return "", false, fmt.Errorf("archive: no free name beside %s: %w", rec.OriginalPath, odraz.ErrExists)
+	return "", nil, fmt.Errorf("archive: no free name beside %s: %w", rec.OriginalPath, odraz.ErrExists)
 }
 
 // bringBack streams the item to dest, which does not exist, and verifies it.
@@ -118,7 +126,7 @@ func (a *Archive) bringBack(ctx context.Context, rec Record, dest string, progre
 		return err
 	}
 	defer rc.Close()
-	// remove undoes the write: dest is this call's file.
+	// remove undoes a write that succeeded: dest is this call's file then.
 	remove := func() {
 		c, cancel := cleanup(ctx)
 		defer cancel()
@@ -131,9 +139,9 @@ func (a *Archive) bringBack(ctx context.Context, rec Record, dest string, progre
 		Progress: func(done, total int64) { progress(Uploading, done, total) },
 	})
 	if err != nil {
-		if !errors.Is(err, odraz.ErrExists) { // else someone else's file got there first
-			remove()
-		}
+		// Nothing is removed: after a failed write there is no telling whose
+		// file is at dest (not every server refuses a second writer). What may
+		// be left of ours is stepped around by the next try.
 		return err
 	}
 	if hex.EncodeToString(got.Sum(nil)) != rec.SHA256 {

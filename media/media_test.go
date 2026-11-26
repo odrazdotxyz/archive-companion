@@ -10,6 +10,7 @@ import (
 	"image/jpeg"
 	"image/png"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -230,5 +231,51 @@ func TestPlaceholderIsJPEG(t *testing.T) {
 	}
 	if bytes.Equal(photo.JPEG, video.JPEG) {
 		t.Error("a video looks like a photo")
+	}
+}
+
+// pngHeader is a PNG that claims a size and depth, with nothing behind it.
+func pngHeader(w, h uint32, depth byte) []byte {
+	ihdr := make([]byte, 13)
+	binary.BigEndian.PutUint32(ihdr, w)
+	binary.BigEndian.PutUint32(ihdr[4:], h)
+	ihdr[8], ihdr[9] = depth, 6
+	chunk := append([]byte("IHDR"), ihdr...)
+	out := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\x0d")
+	out = append(out, chunk...)
+	return binary.BigEndian.AppendUint32(out, crc32.ChecksumIEEE(chunk))
+}
+
+// jpegHeader is the start of a JPEG of three components: marker c0 is baseline,
+// c2 progressive.
+func jpegHeader(marker byte, w, h uint16) []byte {
+	seg := []byte{0xFF, 0xD8, 0xFF, marker, 0, 17, 8, byte(h >> 8), byte(h), byte(w >> 8), byte(w), 3,
+		1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1}
+	return append(seg, 0xFF, 0xDA, 0, 2)
+}
+
+// What counts is the memory a picture needs decoded, not only its pixels.
+func TestDecodedSizeIsBounded(t *testing.T) {
+	for name, data := range map[string][]byte{
+		"16-bit PNG, 36 MP":       pngHeader(6000, 6000, 16),
+		"8-bit PNG, 64 MP":        pngHeader(8000, 8000, 8),
+		"progressive JPEG, 48 MP": jpegHeader(0xC2, 8000, 6000),
+		"baseline JPEG, 90 MP":    jpegHeader(0xC0, 11000, 8200),
+	} {
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		_, err := media.Normalize(data)
+		runtime.ReadMemStats(&after)
+		if !errors.Is(err, odraz.ErrUnsupported) || !strings.Contains(err.Error(), "too large") {
+			t.Errorf("%s: %v", name, err)
+		}
+		if grew := after.TotalAlloc - before.TotalAlloc; grew > 8<<20 {
+			t.Errorf("%s: allocated %d MiB", name, grew>>20)
+		}
+	}
+	// Ordinary phone photos are still decoded.
+	got, err := media.Normalize(jpegOf(t, image.NewGray(image.Rect(0, 0, 8000, 6000))))
+	if err != nil || got.Placeholder {
+		t.Errorf("48 MP baseline: %v", err)
 	}
 }

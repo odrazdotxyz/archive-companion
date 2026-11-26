@@ -20,6 +20,7 @@ const (
 	LongEdge      = 512         // of a thumbnail, in pixels
 	Quality       = 80          // of its JPEG
 	MaxPixels     = 100_000_000 // larger pictures are not decoded
+	MaxDecoded    = 200 << 20   // nor those needing more memory than this
 	MaxThumbInput = 20 << 20    // larger files are not read for a thumbnail
 	exifLimit     = 1 << 20     // how far into a file EXIF is looked for
 )
@@ -49,12 +50,12 @@ func FromReader(r io.ReadSeeker) (Image, error) {
 	if err := rewind(); err != nil {
 		return Image{}, err
 	}
-	cfg, _, err := image.DecodeConfig(r)
+	cfg, format, err := image.DecodeConfig(r)
 	if err != nil {
 		return unsupported(err)
 	}
 	if cfg.Width <= 0 || cfg.Height <= 0 || int64(cfg.Width)*int64(cfg.Height) > MaxPixels {
-		return unsupported(fmt.Errorf("%d x %d pixels", cfg.Width, cfg.Height))
+		return unsupported(fmt.Errorf("too large: %d x %d pixels", cfg.Width, cfg.Height))
 	}
 	if err := rewind(); err != nil {
 		return Image{}, err
@@ -62,6 +63,10 @@ func FromReader(r io.ReadSeeker) (Image, error) {
 	head, err := io.ReadAll(io.LimitReader(r, exifLimit))
 	if err != nil {
 		return Image{}, err
+	}
+	pixels := int64(cfg.Width) * int64(cfg.Height)
+	if need := pixels * bytesPerPixel(cfg, format, head); need > MaxDecoded {
+		return unsupported(fmt.Errorf("too large: %d x %d needs about %d MiB", cfg.Width, cfg.Height, need>>20))
 	}
 	orientation := readEXIF(bytes.NewReader(head)).orientation
 	if err := rewind(); err != nil {
@@ -80,6 +85,48 @@ func FromReader(r io.ReadSeeker) (Image, error) {
 	draw.Draw(small, small.Bounds(), image.NewUniform(color.White), image.Point{}, draw.Src)
 	draw.ApproxBiLinear.Scale(small, small.Bounds(), src, src.Bounds(), draw.Over, nil)
 	return encode(upright(small, orientation))
+}
+
+// bytesPerPixel is what decoding the picture takes, roughly and not too low.
+func bytesPerPixel(cfg image.Config, format string, head []byte) int64 {
+	var n int64 = 8 // 16 bits per channel, and anything unknown
+	switch cfg.ColorModel {
+	case color.GrayModel:
+		n = 1
+	case color.Gray16Model:
+		n = 2
+	case color.YCbCrModel:
+		n = 3
+	case color.RGBAModel, color.NRGBAModel, color.CMYKModel, color.NYCbCrAModel:
+		n = 4
+	default:
+		if _, ok := cfg.ColorModel.(color.Palette); ok {
+			n = 1
+		}
+	}
+	// A progressive JPEG also keeps four bytes per sample while it is decoded.
+	if format == "jpeg" && !baseline(head) {
+		n *= 5
+	}
+	return n
+}
+
+// baseline reports whether the JPEG starting with head says it is not
+// progressive. Not found counts as progressive.
+func baseline(head []byte) bool {
+	for i := 2; i+4 <= len(head) && head[i] == 0xFF; {
+		switch marker := head[i+1]; {
+		case marker == 0xFF: // fill
+			i++
+		case marker == 0xC0 || marker == 0xC1:
+			return true
+		case marker == 0xC2 || marker == 0xDA:
+			return false
+		default:
+			i += 2 + int(head[i+2])<<8 + int(head[i+3])
+		}
+	}
+	return false
 }
 
 func encode(img image.Image) (Image, error) {

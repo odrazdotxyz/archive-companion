@@ -9,8 +9,6 @@ import (
 	"testing"
 	"time"
 
-	odraz "github.com/odrazdotxyz/odraz-go-sdk"
-
 	archive "github.com/odrazdotxyz/archive-companion"
 )
 
@@ -114,11 +112,13 @@ func TestRestoreCorruptObjectLeavesNoFile(t *testing.T) {
 	}
 }
 
-func TestRestoreFailedWriteRemovesOnlyItsOwnFile(t *testing.T) {
+// After a failed write nothing says whose file is at the path (a server may let
+// a second writer in), so nothing is removed.
+func TestRestoreFailedWriteRemovesNothing(t *testing.T) {
 	r, rec := archived(t)
 	r.src.Before = func(op, p string) error {
 		if op == "write" && p == photoPath {
-			r.src.Put(photoPath, []byte("half"))
+			r.src.Put(photoPath, []byte("someone else's, written meanwhile"))
 			return errors.New("connection reset")
 		}
 		return nil
@@ -126,21 +126,17 @@ func TestRestoreFailedWriteRemovesOnlyItsOwnFile(t *testing.T) {
 	if _, err := r.a.Restore(ctx, rec.ID, archive.RestoreInput{}); err == nil {
 		t.Fatal("success")
 	}
-	if r.src.Has(photoPath) {
-		t.Fatal("a partial file stays")
-	}
-	// Someone else creating the file meanwhile is not this call's file.
-	r.src.Before = func(op, p string) error {
-		if op == "write" && p == photoPath {
-			r.src.Put(photoPath, []byte("theirs"))
-		}
-		return nil
-	}
-	if _, err := r.a.Restore(ctx, rec.ID, archive.RestoreInput{}); !errors.Is(err, odraz.ErrExists) {
-		t.Fatalf("err = %v", err)
-	}
-	if string(r.src.Data(photoPath)) != "theirs" {
+	if string(r.src.Data(photoPath)) != "someone else's, written meanwhile" {
 		t.Fatal("another's file was removed")
+	}
+	if !r.src.Has(archive.RecordPath(rec.ID)) || r.dst.Data(rec.Target.Key) == nil {
+		t.Fatalf("left: %v", left(r))
+	}
+	// The next try goes beside it.
+	r.src.Before = nil
+	got, err := r.a.Restore(ctx, rec.ID, archive.RestoreInput{})
+	if err != nil || got.Path != "/Fotos/Köln/IMG 1 (restored).png" || !bytes.Equal(r.src.Data(got.Path), r.photo) {
+		t.Fatalf("%+v %v", got, err)
 	}
 }
 

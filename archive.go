@@ -69,8 +69,9 @@ type ArchiveInput struct {
 	Progress  func(s Stage, done, total int64)
 }
 
-// Archive archives the files of one drive into one target. Run one operation per
-// file at a time.
+// Archive archives the files of one drive into one target. Operations on one file
+// take turns within a process; an application running in several processes, or on
+// several devices, must not archive, restore or delete the same file at once.
 type Archive struct {
 	src   Source
 	dst   Target
@@ -129,6 +130,11 @@ func (a *Archive) Archive(ctx context.Context, p string, in ArchiveInput) (Recor
 	if err != nil || !validPath(clean) {
 		return none, fmt.Errorf("archive: %q cannot be archived: %w", p, odraz.ErrInvalidPath)
 	}
+	unlock, err := a.lock(ctx, clean)
+	if err != nil {
+		return none, err
+	}
+	defer unlock()
 	st, err := a.src.FS.Stat(ctx, clean)
 	if err != nil {
 		return none, err
@@ -265,6 +271,11 @@ func (a *Archive) resume(ctx context.Context, p string, st files.Entry, progress
 			return Record{}, false, fmt.Errorf("%w: %s", ErrSourceChanged, p)
 		}
 		progress(Removing, 0, 0)
+		// The record is why the file may go: it must still be there (another
+		// device may have restored or deleted the item meanwhile).
+		if _, err := a.src.FS.Stat(ctx, RecordPath(rec.ID)); err != nil {
+			return Record{}, false, fmt.Errorf("%w: its record went away: %w", ErrSourceChanged, err)
+		}
 		if err := a.deleteOriginal(ctx, p); err != nil {
 			return Record{}, false, err
 		}

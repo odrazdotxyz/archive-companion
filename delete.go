@@ -14,7 +14,7 @@ func (a *Archive) Delete(ctx context.Context, id string) error {
 	if err := a.writable(); err != nil {
 		return err
 	}
-	rec, err := a.load(ctx, id)
+	rec, unlock, err := a.lockItem(ctx, id)
 	if errors.Is(err, odraz.ErrNotFound) {
 		// Already removed; at most the thumbnail is left over.
 		_ = a.src.FS.Delete(ctx, ThumbPath(id), false)
@@ -23,6 +23,7 @@ func (a *Archive) Delete(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+	defer unlock()
 	if err := a.purgeCopy(ctx, rec); err != nil {
 		return fmt.Errorf("archive: delete %s: %w", id, err)
 	}

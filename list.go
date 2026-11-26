@@ -107,6 +107,24 @@ func (a *Archive) Thumbnail(ctx context.Context, id string) (io.ReadCloser, erro
 	return a.src.FS.Read(ctx, ThumbPath(id), 0, -1)
 }
 
+// lockItem is load with the item's file locked: the record is read again once
+// the lock is held, as it may have gone while waiting.
+func (a *Archive) lockItem(ctx context.Context, id string) (Record, func(), error) {
+	rec, err := a.load(ctx, id)
+	if err != nil {
+		return Record{}, nil, err
+	}
+	unlock, err := a.lock(ctx, rec.OriginalPath)
+	if err != nil {
+		return Record{}, nil, err
+	}
+	if rec, err = a.load(ctx, id); err != nil {
+		unlock()
+		return Record{}, nil, err
+	}
+	return rec, unlock, nil
+}
+
 // load reads the record of the item id and checks that its original is in the
 // connected target.
 func (a *Archive) load(ctx context.Context, id string) (Record, error) {

@@ -15,7 +15,7 @@ target:  /odraz/<drive-key>/<ID>/<file>     the original
 
 ```go
 a, err := archive.New(
-    archive.Source{FS: drive, DriveKey: "nextcloud-alice"},
+    archive.Source{FS: drive, DriveKey: archive.DriveKey(serverURL, account, driveID)},
     archive.Target{FS: bucket, Descriptor: archive.TargetDescriptor{Endpoint: endpoint, Bucket: name, Prefix: prefix}},
     archive.Options{},                                    // VerifyDownload for the stronger check
 )

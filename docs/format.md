@@ -43,11 +43,17 @@ Running `Archive` again after a failure finishes the job.
 
 ## Limits
 
-- One operation per file at a time is the caller's job.
+- Archive, Restore and Delete of one file take turns within a process. Across processes or devices the application
+  must not run them on the same file at once; the library re-checks the record and the file just before removing
+  anything, which narrows but cannot close that window.
+- A **drive key must belong to one drive only** (use `DriveKey(server, account, drive)`): drives sharing a key and a
+  target would be offered, and could permanently delete, each other's files.
+- After a restore whose write failed, whatever is at that path is left alone; the next try uses a "(restored)" name.
 - A change to the file between the last look and the delete is not detected (servers offer no conditional delete).
 - The servers' trash bins keep deleted files: space is freed when they are emptied (see `testenv/README.md`).
 - Videos get a placeholder thumbnail unless the application supplies a frame; so do pictures Go cannot decode
   (HEIC, AVIF) when the server has no preview.
 - If a damaged copy is found while finishing an earlier run, the file is archived again and the old record stays.
 - Memory per item: one upload part (16 MiB for most files), plus at most 20 MiB while a thumbnail is made from the
-  file itself, plus the decoded picture (pictures over 100 megapixels are not decoded).
+  file itself, plus the decoded picture, at most about 200 MiB (larger ones, such as progressive JPEGs over about 13 megapixels,
+  get a placeholder unless the server or the application supplies an image).
