@@ -1,0 +1,25 @@
+name: ci
+on:
+  push: {branches: [main]}
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version: '1.26.x', check-latest: true}
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - run: go vet -tags integration ./...
+      - run: go test -race -count=1 ./...
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+      # source and target are both S3 drives here, so no cloud server is needed
+      - name: integration test against MinIO
+        run: |
+          vars=$(testenv/seed.sh minio)
+          eval "$vars"
+          go test -tags integration -race -count=1 -v -run 'TestArchiveFrom' ./

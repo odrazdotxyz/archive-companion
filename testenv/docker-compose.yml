@@ -1,0 +1,34 @@
+# Throwaway servers for the integration test. TEST ONLY: demo credentials, state on tmpfs.
+# Ports differ from the usual ones so a running demo is not disturbed.
+name: archive-companion-test
+services:
+  nextcloud:
+    image: nextcloud:latest
+    ports: ["127.0.0.1:8182:80"]
+    environment:
+      NEXTCLOUD_ADMIN_USER: admin
+      NEXTCLOUD_ADMIN_PASSWORD: admin-pass-123
+      NEXTCLOUD_TRUSTED_DOMAINS: localhost
+      SQLITE_DATABASE: nextcloud
+    tmpfs: ["/var/www/html"]
+  opencloud:
+    image: opencloudeu/opencloud-rolling:latest
+    entrypoint: ["/bin/sh", "-c", "opencloud init --admin-password admin --insecure yes || true; opencloud server"]
+    ports: ["127.0.0.1:9400:9400"]
+    environment:
+      OC_URL: https://localhost:9400
+      OC_INSECURE: "true"
+      PROXY_HTTP_ADDR: 0.0.0.0:9400
+      PROXY_ENABLE_BASIC_AUTH: "true"
+      PROXY_ENABLE_APP_AUTH: "true"
+      OC_ADD_RUN_SERVICES: auth-app
+      OC_LOG_LEVEL: warn
+    tmpfs: ["/etc/opencloud:uid=1000,gid=1000", "/var/lib/opencloud:uid=1000,gid=1000"]
+  minio:
+    image: cgr.dev/chainguard/minio@sha256:9f0aab4471ebb181be3cfabea21b719303ec583cd9abdb7779f9e53032b844f7
+    command: ["server", "/data", "--address", ":9000"]
+    ports: ["127.0.0.1:9410:9000"]
+    environment:
+      MINIO_ROOT_USER: odraz-test-only
+      MINIO_ROOT_PASSWORD: odraz-test-only-not-a-secret
+    tmpfs: ["/data:uid=65532,gid=65532"]
