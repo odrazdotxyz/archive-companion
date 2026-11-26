@@ -2,6 +2,7 @@ package archive
 
 import (
 	"crypto/rand"
+	"path"
 	"time"
 
 	"github.com/oklog/ulid/v2"
@@ -46,3 +47,6 @@ func ObjectKey(driveKey, id, name string) string { return itemFolder(driveKey, i
 func BucketRecordPath(driveKey, id string) string {
 	return bucketRecordDir(driveKey) + "/" + id + ".json"
 }
+
+// itemFolderOf is the folder of an object key.
+func itemFolderOf(key string) string { return path.Dir(key) }
