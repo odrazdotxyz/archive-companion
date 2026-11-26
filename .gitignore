@@ -1,0 +1,4 @@
+# local development against an unreleased SDK
+go.work
+go.work.sum
+.superpowers/
