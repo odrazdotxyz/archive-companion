@@ -90,6 +90,9 @@ func New(src Source, dst Target, opts Options) (*Archive, error) {
 	if !ok {
 		return nil, fmt.Errorf("archive: the target cannot verify and purge objects: %w", odraz.ErrUnsupported)
 	}
+	if err := dst.Descriptor.check(); err != nil {
+		return nil, err
+	}
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
