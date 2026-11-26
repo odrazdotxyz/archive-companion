@@ -3,6 +3,7 @@ package archive
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"slices"
 	"strings"
@@ -91,4 +92,40 @@ func (a *Archive) readSmall(ctx context.Context, fs files.FS, p string) ([]byte,
 	}
 	defer rc.Close()
 	return io.ReadAll(io.LimitReader(rc, maxRecord+1))
+}
+
+// List returns the archived items of the drive, newest first (by the date the
+// picture was taken, else the file's). Records that cannot be used are returned
+// as problems.
+func (a *Archive) List(ctx context.Context) ([]Record, []Problem, error) { return a.records(ctx) }
+
+// Thumbnail returns the thumbnail (a JPEG) of the item id.
+func (a *Archive) Thumbnail(ctx context.Context, id string) (io.ReadCloser, error) {
+	if !validID(id) {
+		return nil, fmt.Errorf("%w: id %q", ErrBadRecord, id)
+	}
+	return a.src.FS.Read(ctx, ThumbPath(id), 0, -1)
+}
+
+// load reads the record of the item id and checks that its original is in the
+// connected target.
+func (a *Archive) load(ctx context.Context, id string) (Record, error) {
+	if !validID(id) {
+		return Record{}, fmt.Errorf("%w: id %q", ErrBadRecord, id)
+	}
+	data, err := a.readSmall(ctx, a.src.FS, RecordPath(id))
+	if err != nil {
+		return Record{}, err
+	}
+	rec, err := ParseRecord(data, a.src.DriveKey)
+	if err != nil {
+		return Record{}, err
+	}
+	if rec.ID != id {
+		return Record{}, fmt.Errorf("%w: the record of %s describes %s", ErrBadRecord, id, rec.ID)
+	}
+	if rec.Target.TargetDescriptor != a.dst.Descriptor {
+		return Record{}, fmt.Errorf("%w: %s, bucket %s", ErrWrongTarget, rec.Target.Endpoint, rec.Target.Bucket)
+	}
+	return rec, nil
 }
