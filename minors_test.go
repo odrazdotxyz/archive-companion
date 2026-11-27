@@ -163,3 +163,54 @@ func TestDescriptorRefusesQueryCredentials(t *testing.T) {
 		}
 	}
 }
+
+func TestRescanReportsADamagedDriveRecord(t *testing.T) {
+	r, rec := archived(t)
+	damaged := []byte(`{"version":1,`)
+	r.src.Put(archive.RecordPath(rec.ID), damaged)
+	got, err := r.a.Rescan(ctx)
+	if err != nil || len(got.Rebuilt)+len(got.Orphans) != 0 || len(got.Problems) != 1 {
+		t.Fatalf("%+v %v", got, err)
+	}
+	if p := got.Problems[0]; p.Path != archive.RecordPath(rec.ID) || !errors.Is(p.Err, archive.ErrBadRecord) {
+		t.Errorf("problem %+v", p)
+	}
+	if !bytes.Equal(r.src.Data(archive.RecordPath(rec.ID)), damaged) {
+		t.Error("the damaged record was overwritten")
+	}
+}
+
+// The lock is on the path the record named: it must not name another once the
+// lock is held.
+func TestRecordThatMovedWhileWaitingIsRefused(t *testing.T) {
+	for name, act := range map[string]func(*rig, string) error{
+		"delete": func(r *rig, id string) error { return r.a.Delete(ctx, id) },
+		"restore": func(r *rig, id string) error {
+			_, err := r.a.Restore(ctx, id, archive.RestoreInput{})
+			return err
+		},
+	} {
+		r, rec := archived(t)
+		moved := rec
+		moved.OriginalPath = "/elsewhere/IMG 1.png"
+		data, err := moved.Marshal()
+		if err != nil {
+			t.Fatal(err)
+		}
+		reads := 0
+		r.src.Before = func(op, p string) error {
+			if op == "read" && p == archive.RecordPath(rec.ID) {
+				if reads++; reads == 2 { // the read made under the lock
+					r.src.Put(p, data)
+				}
+			}
+			return nil
+		}
+		if err := act(r, rec.ID); !errors.Is(err, archive.ErrBadRecord) {
+			t.Errorf("%s: %v", name, err)
+		}
+		if !r.dst.Has(rec.Target.Key) || !r.src.Has(archive.RecordPath(rec.ID)) || r.src.Has(moved.OriginalPath) {
+			t.Errorf("%s: something was changed: %v %v", name, r.src.Files(), r.dst.Files())
+		}
+	}
+}

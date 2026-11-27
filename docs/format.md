@@ -22,7 +22,9 @@ Unknown top-level fields are kept. A record never holds credentials.
 Records are **untrusted input**. A record is refused unless its id is a ULID matching its file name, `originalPath` is
 a clean path outside `/.odraz` (in any case of letters), `target.key` is exactly the item's own object, and the thumbnail name is its own.
 
-A target's `endpoint` with user info, a query or a fragment (`@`, `?`, `#`) is refused: it could carry a credential.
+A target's `endpoint` with user info, a query or a fragment (`@`, `?`, `#`) could carry a credential. Such a
+descriptor is refused when connecting and in the manifest, and a record naming one cannot be restored or deleted
+(`ErrWrongTarget`, without repeating it). `List` still returns that record as it is on the drive.
 
 ## Archive
 
@@ -32,7 +34,8 @@ A target's `endpoint` with user info, a query or a fragment (`@`, `?`, `#`) is r
 3. The thumbnail and the drive record are written, the record last.
 4. The file is looked at again. Changed: everything is undone and the file stays. Gone: the archive is kept.
    Unchanged: it is deleted, on condition that it is still unchanged where the drive can promise that (see Limits).
-   A refused delete counts as changed.
+   A refused delete counts as changed. When a later run is finishing an earlier one, a changed file stays and so
+   does the earlier record, whose verified copy holds the content as it was; the next run archives the file anew.
 
 Running `Archive` again after a failure finishes the job.
 
@@ -45,7 +48,8 @@ Running `Archive` again after a failure finishes the job.
   target and absent from the drive. A copy of a file that a drive record already has (same checksum, size and
   original path) is not recorded a second time: it is reported as "already archived as <ID>"; of several copies
   without a record the newest is taken. Everything else is reported as an orphan. No original is downloaded. Nothing on
-  the drive is overwritten: a thumbnail left there is kept.
+  the drive is overwritten: a thumbnail left there is kept, and a record that cannot be used is reported as a
+  problem and left alone.
 
 ## Limits
 

@@ -44,10 +44,12 @@ func (a *Archive) Rescan(ctx context.Context) (RescanResult, error) {
 		return res, err
 	}
 	// The files the drive already has a record of: one is not recorded twice.
-	records, _, err := a.records(ctx)
+	records, unusable, err := a.records(ctx)
 	if err != nil {
 		return res, err
 	}
+	// Such a record is left alone, and its item cannot be rebuilt over it.
+	res.Problems = unusable
 	archivedAs := map[content][]Record{}
 	for _, r := range records {
 		archivedAs[r.content()] = append(archivedAs[r.content()], r)

@@ -8,6 +8,7 @@ package archive_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -18,6 +19,7 @@ import (
 	"strings"
 	"testing"
 
+	odraz "github.com/odrazdotxyz/odraz-go-sdk"
 	"github.com/odrazdotxyz/odraz-go-sdk/accounts"
 	_ "github.com/odrazdotxyz/odraz-go-sdk/drivers/s3"
 	"github.com/odrazdotxyz/odraz-go-sdk/files"
@@ -92,7 +94,75 @@ func TestArchiveFromOpenCloud(t *testing.T) {
 
 func TestArchiveFromNextcloud(t *testing.T) {
 	v := env(t, "ODRAZ_TEST_NEXTCLOUD_URL", "ODRAZ_TEST_NEXTCLOUD_USER", "ODRAZ_TEST_NEXTCLOUD_PASSWORD")
-	roundTrip(t, open(t, "nextcloud", "app-password", map[string]string{"url": v[0], "username": v[1], "password": v[2]}, personal))
+	src := &watched{FS: open(t, "nextcloud", "app-password", map[string]string{"url": v[0], "username": v[1], "password": v[2]}, personal)}
+	roundTrip(t, src)
+	// docs/format.md promises that this drive deletes only what is unchanged: a
+	// fall back to a plain delete would pass everything else here.
+	if len(src.answers) != 3 || errors.Join(src.answers...) != nil {
+		t.Fatalf("conditional deletes of three originals: %v", src.answers)
+	}
+	lateEdit(t, src)
+}
+
+// watched notes the answers to conditional deletes, and can edit a file just
+// before one reaches the server.
+type watched struct {
+	files.FS
+	edit    []byte
+	answers []error
+}
+
+func (w *watched) Preview(ctx context.Context, p string, width, height int) (io.ReadCloser, string, error) {
+	return files.Preview(ctx, w.FS, p, width, height)
+}
+
+func (w *watched) DeleteIfMatch(ctx context.Context, p, etag string) error {
+	if w.edit != nil {
+		if err := w.FS.Write(ctx, p, bytes.NewReader(w.edit), files.WriteOptions{Size: int64(len(w.edit)), Overwrite: true}); err != nil {
+			return err
+		}
+	}
+	d, ok := w.FS.(files.ConditionalDeleter)
+	if !ok {
+		return errors.New("the drive has no conditional delete")
+	}
+	err := d.DeleteIfMatch(ctx, p, etag)
+	w.answers = append(w.answers, err)
+	return err
+}
+
+// lateEdit changes a file as it is being deleted: the change must be kept.
+func lateEdit(t *testing.T, src *watched) {
+	t.Helper()
+	dst, desc := s3Drive(t, "ODRAZ_TEST_S3_BUCKET")
+	folder := fmt.Sprintf("/archive-test-%d", rand.Int63())
+	if err := src.Mkdir(ctx, folder); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = src.Delete(context.Background(), folder, true) })
+	a, err := archive.New(archive.Source{FS: src, DriveKey: fmt.Sprintf("it-%d", rand.Int63())}, archive.Target{FS: dst, Descriptor: desc}, archive.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, photo := folder+"/late.jpg", testJPEG()
+	if err := src.Write(ctx, p, bytes.NewReader(photo), files.WriteOptions{Size: int64(len(photo))}); err != nil {
+		t.Fatal(err)
+	}
+	src.edit = []byte("edited at the last moment")
+	rec, err := a.Archive(ctx, p, archive.ArchiveInput{})
+	if err == nil { // the records are outside the folder removed above
+		_ = src.Delete(ctx, archive.RecordPath(rec.ID), false)
+		_ = src.Delete(ctx, archive.ThumbPath(rec.ID), false)
+	}
+	if !errors.Is(err, archive.ErrSourceChanged) || !errors.Is(src.answers[len(src.answers)-1], odraz.ErrChanged) {
+		t.Fatalf("late edit: %v, server: %v", err, src.answers)
+	}
+	if !bytes.Equal(content(t, src, p), src.edit) {
+		t.Fatal("the late edit was not kept")
+	}
+	if list, problems, err := a.List(ctx); err != nil || len(list)+len(problems) != 0 {
+		t.Fatalf("left listed: %v %v %v", list, problems, err)
+	}
 }
 
 func TestArchiveFromS3(t *testing.T) {

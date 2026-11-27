@@ -118,7 +118,12 @@ func (a *Archive) lockItem(ctx context.Context, id string) (Record, func(), erro
 	if err != nil {
 		return Record{}, nil, err
 	}
-	if rec, err = a.load(ctx, id); err != nil {
+	held := rec.OriginalPath
+	rec, err = a.load(ctx, id)
+	if err == nil && rec.OriginalPath != held {
+		err = fmt.Errorf("%w: the record of %s changed its file while waiting for it", ErrBadRecord, id)
+	}
+	if err != nil {
 		unlock()
 		return Record{}, nil, err
 	}

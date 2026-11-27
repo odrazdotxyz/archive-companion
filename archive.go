@@ -70,8 +70,8 @@ type ArchiveInput struct {
 }
 
 // Archive archives the files of one drive into one target. Operations on one file
-// take turns within a process; an application running in several processes, or on
-// several devices, must not archive, restore or delete the same file at once.
+// take turns within a process, Rescan included; an application running in several
+// processes, or on several devices, must not run these on the same file at once.
 type Archive struct {
 	src   Source
 	dst   Target
