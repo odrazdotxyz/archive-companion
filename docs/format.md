@@ -29,7 +29,8 @@ a clean path outside `/.odraz`, `target.key` is exactly the item's own object, a
    `VerifyDownload` is set. The record copy is verified the same way.
 3. The thumbnail and the drive record are written, the record last.
 4. The file is looked at again. Changed: everything is undone and the file stays. Gone: the archive is kept.
-   Unchanged: it is deleted.
+   Unchanged: it is deleted, on condition that it is still unchanged where the drive can promise that (see Limits).
+   A refused delete counts as changed.
 
 Running `Archive` again after a failure finishes the job.
 
@@ -49,7 +50,10 @@ Running `Archive` again after a failure finishes the job.
 - A **drive key must belong to one drive only** (use `DriveKey(server, account, drive)`): drives sharing a key and a
   target would be offered, and could permanently delete, each other's files.
 - After a restore whose write failed, whatever is at that path is left alone; the next try uses a "(restored)" name.
-- A change to the file between the last look and the delete is not detected (servers offer no conditional delete).
+- A change to the file between the last look and the delete is caught only by a drive that deletes conditionally
+  (`files.ConditionalDeleter`, `If-Match`): of the SDK's drives, **Nextcloud**. On every other drive, among them
+  **OpenCloud** (it ignores `If-Match` on DELETE), generic WebDAV and S3, the window stays open: such a change is
+  not detected and the changed file is deleted.
 - The servers' trash bins keep deleted files: space is freed when they are emptied (see `testenv/README.md`).
 - Videos get a placeholder thumbnail unless the application supplies a frame; so do pictures Go cannot decode
   (HEIC, AVIF) when the server has no preview.

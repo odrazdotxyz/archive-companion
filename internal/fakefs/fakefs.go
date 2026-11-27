@@ -40,6 +40,8 @@ type FS struct {
 	ReadOnly bool
 	// Discard keeps only size and checksum of what is written under /odraz.
 	Discard bool
+	// NoConditionalDelete makes DeleteIfMatch answer ErrUnsupported.
+	NoConditionalDelete bool
 	// NoChecksum makes Check.Verify answer ErrUnsupported.
 	NoChecksum bool
 	// PreviewImage is returned by Preview; without it there is no preview.
@@ -351,6 +353,30 @@ func (f *FS) remove(ctx context.Context, op, p string, missingOK bool) error {
 
 func (f *FS) Delete(ctx context.Context, p string, _ bool) error {
 	return f.remove(ctx, "delete", p, false)
+}
+
+// DeleteIfMatch is logged as "deletematch"; Before runs ahead of the comparison.
+func (f *FS) DeleteIfMatch(ctx context.Context, p, etag string) error {
+	if f.NoConditionalDelete {
+		return fmt.Errorf("fakefs: %s: %w", p, odraz.ErrUnsupported)
+	}
+	if err := f.changeable(ctx, "deletematch", p); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n, err := f.get("deletematch", p)
+	if err != nil {
+		return err
+	}
+	if n.dir || etag == "" {
+		return fmt.Errorf("fakefs: %s: %w", p, odraz.ErrInvalidPath)
+	}
+	if entry(p, n).ETag != etag {
+		return fmt.Errorf("fakefs: %s: %w", p, odraz.ErrChanged)
+	}
+	delete(f.nodes, p)
+	return nil
 }
 
 func (f *FS) Purge(ctx context.Context, p string) error { return f.remove(ctx, "purge", p, true) }

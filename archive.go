@@ -208,13 +208,8 @@ func (a *Archive) Archive(ctx context.Context, p string, in ArchiveInput) (Recor
 	}
 
 	progress(Removing, 0, 0)
-	now, err := a.src.FS.Stat(ctx, clean)
-	switch {
-	case errors.Is(err, odraz.ErrNotFound):
-		return rec, nil // removed by someone else: the archived copy is the one left
-	case err != nil:
-		return none, err // the record is there: running again finishes
-	case !unchanged(st, now):
+	// undo takes back the archive of a file that changed meanwhile.
+	undo := func() (Record, error) {
 		c, cancel := cleanup(ctx)
 		defer cancel()
 		if err := a.removeDriveRecord(c, id); err != nil {
@@ -223,17 +218,39 @@ func (a *Archive) Archive(ctx context.Context, p string, in ArchiveInput) (Recor
 		a.purgeItem(c, id, key)
 		return none, fmt.Errorf("%w: %s", ErrSourceChanged, clean)
 	}
-	if err := a.deleteOriginal(ctx, clean); err != nil {
+	now, err := a.src.FS.Stat(ctx, clean)
+	switch {
+	case errors.Is(err, odraz.ErrNotFound):
+		return rec, nil // removed by someone else: the archived copy is the one left
+	case err != nil:
+		return none, err // the record is there: running again finishes
+	case !unchanged(st, now):
+		return undo()
+	}
+	if err := a.deleteOriginal(ctx, clean, st); errors.Is(err, odraz.ErrChanged) {
+		return undo()
+	} else if err != nil {
 		return none, err
 	}
 	return rec, nil
 }
 
-func (a *Archive) deleteOriginal(ctx context.Context, p string) error {
-	if err := a.src.FS.Delete(ctx, p, false); err != nil && !errors.Is(err, odraz.ErrNotFound) {
-		return err
+// deleteOriginal removes the file at p, which the caller has just seen to be
+// still st. A drive that can delete only if unchanged is asked to, and answers
+// odraz.ErrChanged for a file changed since; on any other drive a change after
+// that look goes unnoticed. A file already gone is not an error.
+func (a *Archive) deleteOriginal(ctx context.Context, p string, st files.Entry) error {
+	err := error(odraz.ErrUnsupported)
+	if d, ok := a.src.FS.(files.ConditionalDeleter); ok && st.ETag != "" {
+		err = d.DeleteIfMatch(ctx, p, st.ETag)
 	}
-	return nil
+	if errors.Is(err, odraz.ErrUnsupported) {
+		err = a.src.FS.Delete(ctx, p, false)
+	}
+	if errors.Is(err, odraz.ErrNotFound) {
+		return nil
+	}
+	return err
 }
 
 // resume finishes an earlier run that recorded the file but did not remove it.
@@ -276,7 +293,9 @@ func (a *Archive) resume(ctx context.Context, p string, st files.Entry, progress
 		if _, err := a.src.FS.Stat(ctx, RecordPath(rec.ID)); err != nil {
 			return Record{}, false, fmt.Errorf("%w: its record went away: %w", ErrSourceChanged, err)
 		}
-		if err := a.deleteOriginal(ctx, p); err != nil {
+		if err := a.deleteOriginal(ctx, p, st); errors.Is(err, odraz.ErrChanged) {
+			return Record{}, false, fmt.Errorf("%w: %s", ErrSourceChanged, p)
+		} else if err != nil {
 			return Record{}, false, err
 		}
 		return rec, true, nil

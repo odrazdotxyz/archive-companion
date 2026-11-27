@@ -123,7 +123,7 @@ func TestArchiveMovesFileAndWritesDriveRecordLast(t *testing.T) {
 	var order []string
 	note := func(fs string) func(op, p string) error {
 		return func(op, p string) error {
-			if op == "write" || op == "verify" || op == "delete" {
+			if op == "write" || op == "verify" || op == "deletematch" {
 				order = append(order, fs+" "+op+" "+p)
 			}
 			return nil
@@ -138,7 +138,7 @@ func TestArchiveMovesFileAndWritesDriveRecordLast(t *testing.T) {
 	brec := archive.BucketRecordPath(dk, rec2.ID)
 	want := []string{
 		"dst write " + rec2.Target.Key, "dst verify " + rec2.Target.Key, "dst write " + brec, "dst verify " + brec,
-		"src write " + archive.ThumbPath(rec2.ID), "src write " + archive.RecordPath(rec2.ID), "src delete " + photoPath,
+		"src write " + archive.ThumbPath(rec2.ID), "src write " + archive.RecordPath(rec2.ID), "src deletematch " + photoPath,
 	}
 	if !slices.Equal(order, want) {
 		t.Errorf("order:\n%s", strings.Join(order, "\n"))
@@ -333,7 +333,7 @@ func TestLostResponseOnDriveRecordKeepsObject(t *testing.T) {
 func TestResumeDeletesOnlyTheSameContent(t *testing.T) {
 	r := newRig(t, archive.VerifyChecksum)
 	r.src.Before = func(op, p string) error {
-		if op == "delete" && p == photoPath {
+		if op == "deletematch" && p == photoPath {
 			return errors.New("offline")
 		}
 		return nil
