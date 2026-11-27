@@ -42,7 +42,9 @@ Running `Archive` again after a failure finishes the job.
   then removes the copy in the target (unless `KeepCopy`).
 - **Delete** removes every version of the original in the target, then the records and thumbnail.
 - **Rescan** recreates missing drive records from the target's copies, only for items whose original is complete in the
-  target and absent from the drive. Everything else is reported as an orphan. No original is downloaded. Nothing on
+  target and absent from the drive. A copy of a file that a drive record already has (same checksum, size and
+  original path) is not recorded a second time: it is reported as "already archived as <ID>"; of several copies
+  without a record the newest is taken. Everything else is reported as an orphan. No original is downloaded. Nothing on
   the drive is overwritten: a thumbnail left there is kept.
 
 ## Limits
@@ -60,6 +62,7 @@ Running `Archive` again after a failure finishes the job.
 - The servers' trash bins keep deleted files: space is freed when they are emptied (see `testenv/README.md`).
 - Videos get a placeholder thumbnail unless the application supplies a frame; so do pictures Go cannot decode
   (HEIC, AVIF) when the server has no preview.
+- Rescan reads the drive records when it starts: a file archived while it runs can still get a second record.
 - If a damaged copy is found while finishing an earlier run, the file is archived again and the old record stays.
 - Memory per item: one upload part (16 MiB for most files), plus at most 20 MiB while a thumbnail is made from the
   file itself, plus the decoded picture, at most about 200 MiB (larger ones, such as progressive JPEGs over about 13 megapixels,

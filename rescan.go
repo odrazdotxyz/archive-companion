@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"path"
+	"slices"
 	"strings"
 
 	odraz "github.com/odrazdotxyz/odraz-go-sdk"
@@ -29,8 +30,9 @@ type RescanResult struct {
 
 // Rescan recreates drive records that are missing from the records kept in the
 // target, for example after a server was lost. A record is only recreated for an
-// item whose original is complete in the target and not on the drive. Existing
-// records are never overwritten, and no original is downloaded.
+// item whose original is complete in the target and not on the drive, and of
+// several copies of one file only for the newest. Existing records are never
+// overwritten, and no original is downloaded.
 func (a *Archive) Rescan(ctx context.Context) (RescanResult, error) {
 	var res RescanResult
 	if err := a.writable(); err != nil {
@@ -41,6 +43,17 @@ func (a *Archive) Rescan(ctx context.Context) (RescanResult, error) {
 	if err != nil && !errors.Is(err, odraz.ErrNotFound) {
 		return res, err
 	}
+	// The files the drive already has a record of: one is not recorded twice.
+	records, _, err := a.records(ctx)
+	if err != nil {
+		return res, err
+	}
+	archivedAs := map[content][]Record{}
+	for _, r := range records {
+		archivedAs[r.content()] = append(archivedAs[r.content()], r)
+	}
+	// Newest first (ids sort by time), so of several copies the newest is taken.
+	slices.SortFunc(entries, func(x, y files.Entry) int { return strings.Compare(y.Name, x.Name) })
 	recorded := map[string]bool{}
 	for _, e := range entries {
 		id, isRecord := strings.CutSuffix(e.Name, ".json")
@@ -49,7 +62,7 @@ func (a *Archive) Rescan(ctx context.Context) (RescanResult, error) {
 		}
 		recorded[id] = true
 		p := dir + "/" + e.Name
-		rec, orphan, err := a.rebuild(ctx, id, p)
+		rec, orphan, err := a.rebuild(ctx, id, p, archivedAs)
 		switch {
 		case ctx.Err() != nil:
 			return res, ctx.Err()
@@ -58,6 +71,7 @@ func (a *Archive) Rescan(ctx context.Context) (RescanResult, error) {
 		case orphan != "":
 			res.Orphans = append(res.Orphans, Orphan{p, orphan})
 		case rec != nil:
+			archivedAs[rec.content()] = append(archivedAs[rec.content()], *rec)
 			res.Rebuilt = append(res.Rebuilt, *rec)
 		}
 	}
@@ -84,9 +98,17 @@ func (a *Archive) Rescan(ctx context.Context) (RescanResult, error) {
 	return res, nil
 }
 
+// content is what makes two records records of the same file.
+type content struct {
+	sha256, path string
+	size         int64
+}
+
+func (r Record) content() content { return content{r.SHA256, r.OriginalPath, r.Size} }
+
 // rebuild recreates the drive record of the item id from the target's record at
 // p, if it is missing and may be. A reason means the item is an orphan.
-func (a *Archive) rebuild(ctx context.Context, id, p string) (rec *Record, orphan string, err error) {
+func (a *Archive) rebuild(ctx context.Context, id, p string, archivedAs map[content][]Record) (rec *Record, orphan string, err error) {
 	if !validID(id) {
 		return nil, "the record's name is not an item id", nil
 	}
@@ -114,6 +136,15 @@ func (a *Archive) rebuild(ctx context.Context, id, p string) (rec *Record, orpha
 	// Again, now that nothing else is working on the file.
 	if known, err := a.known(ctx, id); known || err != nil {
 		return nil, "", err
+	}
+	for _, other := range archivedAs[r.content()] {
+		stands, err := a.stands(ctx, other)
+		if err != nil {
+			return nil, "", err
+		}
+		if stands {
+			return nil, "already archived as " + other.ID, nil
+		}
 	}
 	obj, err := a.dst.FS.Stat(ctx, r.Target.Key)
 	switch {
@@ -146,6 +177,22 @@ func (a *Archive) known(ctx context.Context, id string) (bool, error) {
 		return false, nil
 	}
 	return err == nil, err
+}
+
+// stands reports whether the drive still has the record and, where this target
+// can tell, its copy is there in full.
+func (a *Archive) stands(ctx context.Context, r Record) (bool, error) {
+	if known, err := a.known(ctx, r.ID); !known || err != nil {
+		return false, err
+	}
+	if r.Target.TargetDescriptor != a.dst.Descriptor {
+		return true, nil
+	}
+	obj, err := a.dst.FS.Stat(ctx, r.Target.Key)
+	if errors.Is(err, odraz.ErrNotFound) {
+		return false, nil
+	}
+	return err == nil && !obj.IsDir && obj.Size == r.Size, err
 }
 
 // createDriveRecord writes a rebuilt record with a placeholder thumbnail,
