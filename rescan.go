@@ -1,12 +1,15 @@
 package archive
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"path"
 	"strings"
 
 	odraz "github.com/odrazdotxyz/odraz-go-sdk"
+	"github.com/odrazdotxyz/odraz-go-sdk/files"
 
 	"github.com/odrazdotxyz/archive-companion/media"
 )
@@ -87,9 +90,7 @@ func (a *Archive) rebuild(ctx context.Context, id, p string) (rec *Record, orpha
 	if !validID(id) {
 		return nil, "the record's name is not an item id", nil
 	}
-	if _, err := a.src.FS.Stat(ctx, RecordPath(id)); err == nil {
-		return nil, "", nil // already known
-	} else if !errors.Is(err, odraz.ErrNotFound) {
+	if known, err := a.known(ctx, id); known || err != nil {
 		return nil, "", err
 	}
 	data, err := a.readSmall(ctx, a.dst.FS, p)
@@ -104,6 +105,15 @@ func (a *Archive) rebuild(ctx context.Context, id, p string) (rec *Record, orpha
 		return nil, "the record describes another item", nil
 	case r.Target.TargetDescriptor != a.dst.Descriptor:
 		return nil, "the record names another target", nil
+	}
+	unlock, err := a.lock(ctx, r.OriginalPath)
+	if err != nil {
+		return nil, "", err
+	}
+	defer unlock()
+	// Again, now that nothing else is working on the file.
+	if known, err := a.known(ctx, id); known || err != nil {
+		return nil, "", err
 	}
 	obj, err := a.dst.FS.Stat(ctx, r.Target.Key)
 	switch {
@@ -120,15 +130,65 @@ func (a *Archive) rebuild(ctx context.Context, id, p string) (rec *Record, orpha
 	case err != nil && !errors.Is(err, odraz.ErrNotFound):
 		return nil, "", err
 	}
-	thumb := media.Placeholder(media.KindOf(path.Base(r.OriginalPath), r.Mime))
 	r.Rebuilt = true
-	r.Thumb = Thumb{File: id + ".jpg", W: thumb.W, H: thumb.H, Placeholder: true}
-	data, err = r.Marshal()
-	if err != nil {
-		return nil, "", err
-	}
-	if err := a.writeDriveRecord(ctx, id, thumb.JPEG, data); err != nil {
+	if err := a.createDriveRecord(ctx, &r); errors.Is(err, odraz.ErrExists) {
+		return nil, "", nil // written meanwhile, so already known
+	} else if err != nil {
 		return nil, "", err
 	}
 	return &r, "", nil
+}
+
+// known reports whether the drive has a record of the item id.
+func (a *Archive) known(ctx context.Context, id string) (bool, error) {
+	_, err := a.src.FS.Stat(ctx, RecordPath(id))
+	if errors.Is(err, odraz.ErrNotFound) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// createDriveRecord writes a rebuilt record with a placeholder thumbnail,
+// replacing nothing: a thumbnail that is already there stays, and a record that
+// is already there is odraz.ErrExists.
+func (a *Archive) createDriveRecord(ctx context.Context, r *Record) error {
+	if err := a.src.FS.Mkdir(ctx, Dir); err != nil {
+		return err
+	}
+	create := func(p string, data []byte) error {
+		return a.src.FS.Write(ctx, p, bytes.NewReader(data), files.WriteOptions{Size: int64(len(data))})
+	}
+	placeholder := media.Placeholder(media.KindOf(path.Base(r.OriginalPath), r.Mime))
+	ours := Thumb{File: r.ID + ".jpg", W: placeholder.W, H: placeholder.H, Placeholder: true}
+	err := create(ThumbPath(r.ID), placeholder.JPEG)
+	switch {
+	case errors.Is(err, odraz.ErrExists):
+		same, err := a.holds(ctx, ThumbPath(r.ID), placeholder.JPEG)
+		if err != nil {
+			return err
+		}
+		if same {
+			r.Thumb = ours
+		} // else it is the one the record from the target describes
+	case err != nil:
+		return err
+	default:
+		r.Thumb = ours
+	}
+	data, err := r.Marshal()
+	if err != nil {
+		return err
+	}
+	return create(RecordPath(r.ID), data) // last: it marks the item as archived
+}
+
+// holds reports whether the drive file at p has exactly the content data.
+func (a *Archive) holds(ctx context.Context, p string, data []byte) (bool, error) {
+	rc, err := a.src.FS.Read(ctx, p, 0, -1)
+	if err != nil {
+		return false, err
+	}
+	defer rc.Close()
+	got, err := io.ReadAll(io.LimitReader(rc, int64(len(data))+1))
+	return bytes.Equal(got, data), err
 }

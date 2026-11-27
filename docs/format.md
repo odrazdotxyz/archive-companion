@@ -20,7 +20,9 @@ every device for the same drive.
 Unknown top-level fields are kept. A record never holds credentials.
 
 Records are **untrusted input**. A record is refused unless its id is a ULID matching its file name, `originalPath` is
-a clean path outside `/.odraz`, `target.key` is exactly the item's own object, and the thumbnail name is its own.
+a clean path outside `/.odraz` (in any case of letters), `target.key` is exactly the item's own object, and the thumbnail name is its own.
+
+A target's `endpoint` with user info, a query or a fragment (`@`, `?`, `#`) is refused: it could carry a credential.
 
 ## Archive
 
@@ -40,11 +42,12 @@ Running `Archive` again after a failure finishes the job.
   then removes the copy in the target (unless `KeepCopy`).
 - **Delete** removes every version of the original in the target, then the records and thumbnail.
 - **Rescan** recreates missing drive records from the target's copies, only for items whose original is complete in the
-  target and absent from the drive. Everything else is reported as an orphan. No original is downloaded.
+  target and absent from the drive. Everything else is reported as an orphan. No original is downloaded. Nothing on
+  the drive is overwritten: a thumbnail left there is kept.
 
 ## Limits
 
-- Archive, Restore and Delete of one file take turns within a process. Across processes or devices the application
+- Archive, Restore, Delete and Rescan of one file take turns within a process. Across processes or devices the application
   must not run them on the same file at once; the library re-checks the record and the file just before removing
   anything, which narrows but cannot close that window.
 - A **drive key must belong to one drive only** (use `DriveKey(server, account, drive)`): drives sharing a key and a

@@ -134,5 +134,10 @@ func ParseRecord(data []byte, driveKey string) (Record, error) {
 // validPath reports whether p is a clean drive path of a file of the user's.
 func validPath(p string) bool {
 	clean, err := files.CleanPath(p)
-	return err == nil && clean == p && p != "/" && p != reserved && !strings.HasPrefix(p, reserved+"/")
+	if err != nil || clean != p || p == "/" {
+		return false
+	}
+	// In any case of letters: some servers treat them as the same folder.
+	top, _, _ := strings.Cut(p[1:], "/")
+	return !strings.EqualFold("/"+top, reserved)
 }

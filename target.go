@@ -30,8 +30,9 @@ type object = map[string]json.RawMessage
 
 // check refuses a descriptor that could carry a credential.
 func (d TargetDescriptor) check() error {
-	if strings.Contains(d.Endpoint, "@") {
-		return fmt.Errorf("archive: the endpoint must not contain a user name or key: %w", odraz.ErrInvalidPath)
+	// User info, a query or a fragment. The endpoint is not repeated here.
+	if strings.ContainsAny(d.Endpoint, "@?#") {
+		return fmt.Errorf("archive: the endpoint must not contain a user name, key, query or fragment: %w", odraz.ErrInvalidPath)
 	}
 	return nil
 }

@@ -143,6 +143,9 @@ func (a *Archive) load(ctx context.Context, id string) (Record, error) {
 		return Record{}, fmt.Errorf("%w: the record of %s describes %s", ErrBadRecord, id, rec.ID)
 	}
 	if rec.Target.TargetDescriptor != a.dst.Descriptor {
+		if rec.Target.check() != nil { // it may hold a credential: not repeated
+			return Record{}, ErrWrongTarget
+		}
 		return Record{}, fmt.Errorf("%w: %s, bucket %s", ErrWrongTarget, rec.Target.Endpoint, rec.Target.Bucket)
 	}
 	return rec, nil
